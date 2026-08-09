@@ -1,3 +1,4 @@
+"""Transcribe archivos de audio/video usando Together API (Whisper v3)."""
 import os
 import subprocess
 import sys
@@ -8,6 +9,7 @@ if len(sys.argv) < 2:
     print("Uso: python src/transcribe_video.py <nombre_del_video>")
     sys.exit(1)
 
+# Rutas y configuración
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IN_DIR = os.path.join(BASE_DIR, "in")
 OUT_DIR = os.path.join(BASE_DIR, "out")
@@ -36,6 +38,7 @@ text_out = os.path.join(OUT_DIR, f"{base_name}_{timestamp}.txt")
 
 audio_extensions = [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac"]
 
+# Extraer audio con ffmpeg si es video
 if ext in audio_extensions:
     audio_out = video_path
 else:
@@ -51,6 +54,7 @@ else:
 
 client = Together(api_key=api_key)
 
+# Transcribir audio y guardar texto
 try:
     with open(audio_out, "rb") as f:
         res = client.audio.transcriptions.create(
