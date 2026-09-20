@@ -22,7 +22,7 @@ if not api_key:
     st.error("Error: API Key de Together no encontrada ('key.env' o TOGETHER_API_KEY).")
     st.stop()
 
-uploaded_file = st.file_uploader("Sube un archivo (mp4, mov, mp3, wav, etc.)", type=["mp4", "mov", "avi", "mkv", "mp3", "wav", "flac", "m4a"])
+uploaded_file = st.file_uploader("Sube un archivo (mp4, mov, mp3, wav, webm, etc.)", type=["mp4", "mov", "avi", "mkv", "webm", "mp3", "wav", "flac", "m4a", "ogg", "aac", "weba"])
 
 if uploaded_file is not None:
     file_id = f"{uploaded_file.name}_{uploaded_file.size}"
