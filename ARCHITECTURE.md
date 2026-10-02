@@ -1,76 +1,97 @@
-# Arquitectura del Sistema: Transcribe (Herramienta Ligera) 
+# Arquitectura del Sistema: Transcribe
 
-## 1. Visión General de la Arquitectura (C4 Model)
+Herramienta local de transcripción de audio y video con Whisper (Together AI),
+con **interfaz nativa** (Qt) y **CLI** para automatización máquina-máquina.
+
+## 1. Visión general
 
 ```mermaid
 C4Container
     title Diagrama de Contenedores - Sistema de Transcripción
 
-    Person(user, "Usuario", "Interactúa con el sistema para transcribir archivos de audio y video de forma rápida.")
-  
-    System_Ext(togetherApi, "Together AI API", "Provee el modelo Whisper (large-v3) para transcripción rápida basada en la nube.")
-    System_Ext(ffmpeg, "FFmpeg", "Herramienta del SO para extraer y convertir formatos multimedia.")
+    Person(user, "Usuario", "Transcribe audio y video, consulta y gestiona el historial.")
+    System_Ext(bridge, "Sistemas externos", "Scripts y automatizaciones que consumen el CLI vía JSON.")
+
+    System_Ext(togetherApi, "Together AI API", "Modelo Whisper large-v3 para transcripción en la nube.")
+    System_Ext(ffmpeg, "FFmpeg", "Extrae y convierte audio (WAV 16kHz mono).")
 
     Container_Boundary(c1, "Sistema Transcribe") {
-        Container(webApp, "Aplicación Web (Streamlit)", "Python, Streamlit", "Interfaz gráfica simple para cargar archivos y ver/descargar resultados de texto.")
-        Container(cliScripts, "Scripts CLI", "Python", "Scripts de consola para automatización por línea de comandos (transcribe_audio.py, etc).")
-        Container(storage, "Almacenamiento Local Simple", "File System", "Almacena temporalmente archivos subidos (`/in`) y audios/resultados (`/out`).")
+        Container(gui, "App nativa", "Python, PySide6/Qt", "Historial, reproductor de audio y video, transcripción por lotes.")
+        Container(cli, "CLI", "Python, argparse", "run/list/show/redo/rm con salida JSON y códigos de salida.")
+        Container(core, "Núcleo", "Python", "Transcripción, conversión, nombres normalizados y deduplicación. Sin dependencias de UI.")
+        ContainerDb(db, "SQLite", "transcribe.db", "Fuente de verdad: texto, metadatos, hashes y rutas.")
+        Container(storage, "Archivos", "File System", "Originales en `in/`, audio derivado en `out/`.")
     }
 
-    Rel(user, webApp, "Sube archivos multimedia", "Navegador Web")
-    Rel(user, cliScripts, "Ejecuta comandos", "Terminal")
-  
-    Rel(webApp, storage, "Guarda archivos subidos temporalmente", "I/O")
-    Rel(cliScripts, storage, "Lee y escribe archivos", "I/O")
-
-    Rel(webApp, ffmpeg, "Ejecuta para estandarizar audio a WAV 16kHz", "Subprocess")
-    Rel(cliScripts, ffmpeg, "Ejecuta para extraer audio", "Subprocess")
-
-    Rel(webApp, togetherApi, "Envía buffer de audio y recibe transcripción", "HTTPS (API REST)")
-    Rel(cliScripts, togetherApi, "Envía audio y recibe texto", "HTTPS (API REST)")
+    Rel(user, gui, "Usa")
+    Rel(bridge, cli, "Invoca", "stdout JSON")
+    Rel(gui, core, "Llama")
+    Rel(cli, core, "Llama")
+    Rel(core, db, "Lee y escribe")
+    Rel(core, storage, "Lee y escribe")
+    Rel(core, ffmpeg, "Convierte")
+    Rel(core, togetherApi, "Transcribe", "HTTPS")
 ```
 
-## 2. Flujo de Ejecución Detallado (Diagrama de Secuencia)
+## 2. Módulos
 
-El siguiente diagrama detalla la lógica condicional empleada por Streamlit y el pre-procesamiento del archivo subido.
+| Archivo | Responsabilidad |
+|---|---|
+| `src/core.py` | Transcripción, conversión ffmpeg, nombres, dedup, idiomas. Sin UI. |
+| `src/db.py` | Esquema SQLite, consultas, borrado con archivos asociados. |
+| `src/gui.py` | Interfaz nativa Qt: historial, reproductor, lotes. |
+| `src/cli.py` | Interfaz de línea de comandos para automatización. |
 
-```mermaid
-sequenceDiagram
-    actor Usuario
-    participant UI as Streamlit UI (app.py)
-    participant FS as File System (/in, /out)
-    participant FFmpeg as FFmpeg (OS)
-    participant API as Together AI API
+Cuatro módulos, sin scripts sueltos: la normalización de nombres vive en
+`core.py` (`slugify`), junto al resto de la lógica que comparten GUI y CLI.
 
-    Usuario->>UI: Sube un archivo (mp4, mov, mp3, etc.)
-    UI->>FS: Guarda el archivo temporalmente en `/in` con Timestamp
-  
-    alt Es archivo de Audio nativo (.mp3, .wav, etc)
-        UI->>UI: Define la ruta del audio original para la API
-    else Es Video o formato a procesar (.mp4, .mov, etc)
-        UI->>FFmpeg: subprocess.run(ffmpeg -i input -vn -ac 1 -ar 16000 output.wav)
-        FFmpeg->>FS: Escribe archivo `output.wav` temporal en `/out`
-        UI->>UI: Define la ruta del nuevo `.wav` para la API
-    end
+## 3. Decisiones de diseño
 
-    UI->>API: HTTP POST (modelo: whisper-large-v3, archivo: audio)
-    API-->>UI: Retorna JSON con la transcripción completa
-  
-    UI->>FS: Guarda el resultado de texto (`.txt`) en `/out`
-    UI->>UI: Actualiza `session_state` con el texto
-    UI-->>Usuario: Muestra texto en pantalla y habilita botón de Descarga
+**La BD es la fuente de verdad.** El texto vive en `transcribe.db`, no en archivos
+`.txt` sueltos. Evita mantener dos copias sincronizadas: retranscribir actualiza
+un único lugar y la descarga se genera al vuelo.
+
+**Deduplicación por hash SHA-256.** Un archivo ya transcrito se reconoce aunque
+cambie de nombre, y no se gasta una llamada a la API.
+
+**Nombres normalizados.** Esquema `<tipo>_<AAAAMMDD-HHMM>_<slug>_<formato>`,
+aplicado por igual desde la GUI y el CLI.
+
+**Idioma opcional.** Forzar un idioma incorrecto produce transcripciones
+alucinadas, así que se puede dejar que Whisper lo detecte.
+
+**Núcleo sin UI.** `core.py` no importa Qt ni nada de presentación, de modo que
+la GUI y el CLI comparten exactamente el mismo comportamiento.
+
+**Conversión con consentimiento.** El reproductor del sistema no decodifica
+VP9 ni AV1. Al importar un vídeo así, la app avisa antes de empezar y ofrece
+convertirlo a H.264, transcribirlo tal cual (el audio se procesa igual de
+bien) o cancelar. Nunca se convierte sin preguntar: recodificar tiene pérdida
+y duplica el espacio. El original siempre se conserva.
+
+Para entradas ya guardadas, el menú ofrece la misma conversión y abrir el
+archivo con el reproductor del sistema.
+
+## 4. Formatos
+
+- **Sin conversión** (van directos a la API): `.mp3`, `.wav`, `.flac`, `.m4a`
+- **Con ffmpeg** → WAV 16kHz mono: todo lo demás, incluidos `.opus` de WhatsApp,
+  `.webm`, `.mp4`, `.mov`, `.amr`, `.3gp`
+
+## 5. Uso
+
+```bash
+# Interfaz nativa
+python3 src/gui.py
+
+# CLI
+python3 src/cli.py run audio.opus -l es
+python3 src/cli.py --json list
+python3 src/cli.py show 18
+python3 src/cli.py redo 25 -l en
+python3 src/cli.py --json rm 25 --original
 ```
 
-## 3. Gestión de Estado en Streamlit
-
-Debido a que Streamlit recarga el script en cada interacción del usuario (como al hacer click en un botón de descarga), se utiliza un mecanismo de `session_state` para evitar volver a transcribir el mismo archivo accidentalmente.
-
-- **`st.session_state["file_id"]`**: Se genera un identificador único basado en el nombre y tamaño del archivo (`f"{uploaded_file.name}_{uploaded_file.size}"`).
-- **Verificación**: Si el `file_id` actual coincide con el de `session_state`, Streamlit no ejecuta de nuevo el proceso de FFmpeg ni la petición a la API. Directamente renderiza el texto almacenado en memoria.
-- **`st.session_state["transcript_text"]`** y **`st.session_state["out_filename"]`**: Almacenan el resultado final y el nombre del archivo para renderizar de manera segura el botón `st.download_button`.
-
-## 4. Componentes Clave
-
-* **`src/app.py`**: El punto de entrada principal para la interfaz gráfica.
-* **`key.env`**: Archivo de entorno local (no subido a git) para inyectar `TOGETHER_API_KEY`.
-* **Requerimientos del Sistema**: Requiere `ffmpeg` instalado globalmente en la máquina del usuario o servidor que ejecute Streamlit. No requiere base de datos alguna.
+Códigos de salida del CLI: `0` correcto, `1` error de uso, `2` fallo de
+transcripción, `3` no encontrado. Con `--json`, stdout es JSON puro y el
+progreso va a stderr.

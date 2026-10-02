@@ -1,0 +1,17 @@
+#!/bin/bash
+# Lanzador: usa el Python del venv sin necesidad de activarlo.
+#   ./transcribe            abre la interfaz grafica
+#   ./transcribe list       cualquier subcomando va al CLI
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$DIR/.venv/bin/python3"
+
+if [ ! -x "$PY" ]; then
+  echo "No se encuentra el entorno virtual en $DIR/.venv" >&2
+  exit 1
+fi
+
+if [ $# -eq 0 ]; then
+  exec "$PY" "$DIR/src/gui.py"
+else
+  exec "$PY" "$DIR/src/cli.py" "$@"
+fi
